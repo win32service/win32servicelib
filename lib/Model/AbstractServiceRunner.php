@@ -1,4 +1,6 @@
 <?php
+
+declare(strict_types=1);
 /**
  * This file is part of Win32Service Library package.
  *
@@ -9,6 +11,7 @@
 
 namespace Win32Service\Model;
 
+use Win32Service\Exception\RecoveryActionException;
 use Win32Service\Exception\ServiceAccessDeniedException;
 use Win32Service\Exception\ServiceNotFoundException;
 use Win32Service\Exception\ServiceStatusException;
@@ -119,52 +122,56 @@ abstract class AbstractServiceRunner implements RunnerServiceInterface
         if (!$status->starting()) {
             throw new ServiceStatusException('Service is not in starting...');
         }
-        win32_set_service_status(WIN32_SERVICE_START_PENDING);
-        $this->setup();
-        win32_set_service_status(WIN32_SERVICE_RUNNING);
+        try {
+            win32_set_service_status(WIN32_SERVICE_START_PENDING);
+            $this->setup();
+            win32_set_service_status(WIN32_SERVICE_RUNNING);
 
-        while (($ctr_msg = win32_get_last_control_message()) != WIN32_SERVICE_CONTROL_STOP && !$this->stopRequested) {
-            if ($ctr_msg === WIN32_SERVICE_CONTROL_INTERROGATE) {
-                win32_set_service_status($this->paused ? WIN32_SERVICE_PAUSED : WIN32_SERVICE_RUNNING);
-            } elseif ($ctr_msg === WIN32_SERVICE_CONTROL_CONTINUE && $status->isPaused()) {
-                $this->paused = false;
-                win32_set_service_status(WIN32_SERVICE_CONTINUE_PENDING);
-                $this->beforeContinue();
-                win32_set_service_status(WIN32_SERVICE_RUNNING);
-            } elseif ($ctr_msg === WIN32_SERVICE_CONTROL_PAUSE && $status->isRunning()) {
-                $this->paused = true;
-                win32_set_service_status(WIN32_SERVICE_PAUSE_PENDING);
-                $this->beforePause();
-                win32_set_service_status(WIN32_SERVICE_PAUSED);
-            }
-
-            if (!$this->paused) {
-                try {
-                    ++$loopCount;
-                    if ($maxRun > 0 && $loopCount > $maxRun) {
-                        throw new StopLoopException('Max loop reached');
-                    }
-                    // If not paused, run the action loop.
-                    $startRun = microtime(true);
-                    $this->run($ctr_msg);
-                    $this->lastRunDuration = microtime(true) - $startRun;
-                    if ($this->slowRunduration < $this->lastRunDuration) {
-                        $this->slowRunduration = $this->lastRunDuration;
-                    }
-                    // if run is too slow, call the special function on service
-                    if ($this->lastRunDuration > 30.0) {
-                        $this->lastRunIsTooSlow($this->lastRunDuration);
-                    }
-                } catch (StopLoopException) {
-                    $this->requestStop();
+            while (($ctr_msg = win32_get_last_control_message()) != WIN32_SERVICE_CONTROL_STOP && !$this->stopRequested) {
+                if ($ctr_msg === WIN32_SERVICE_CONTROL_INTERROGATE) {
+                    win32_set_service_status($this->paused ? WIN32_SERVICE_PAUSED : WIN32_SERVICE_RUNNING);
+                } elseif ($ctr_msg === WIN32_SERVICE_CONTROL_CONTINUE && $status->isPaused()) {
+                    $this->paused = false;
+                    win32_set_service_status(WIN32_SERVICE_CONTINUE_PENDING);
+                    $this->beforeContinue();
+                    win32_set_service_status(WIN32_SERVICE_RUNNING);
+                } elseif ($ctr_msg === WIN32_SERVICE_CONTROL_PAUSE && $status->isRunning()) {
+                    $this->paused = true;
+                    win32_set_service_status(WIN32_SERVICE_PAUSE_PENDING);
+                    $this->beforePause();
+                    win32_set_service_status(WIN32_SERVICE_PAUSED);
                 }
-            }
 
-            $status = $this->getServiceInformations($this->serviceId);
+                if (!$this->paused) {
+                    try {
+                        ++$loopCount;
+                        if ($maxRun > 0 && $loopCount > $maxRun) {
+                            throw new StopLoopException('Max loop reached');
+                        }
+                        // If not paused, run the action loop.
+                        $startRun = microtime(true);
+                        $this->run($ctr_msg);
+                        $this->lastRunDuration = microtime(true) - $startRun;
+                        if ($this->slowRunduration < $this->lastRunDuration) {
+                            $this->slowRunduration = $this->lastRunDuration;
+                        }
+                        // if run is too slow, call the special function on service
+                        if ($this->lastRunDuration > 30.0) {
+                            $this->lastRunIsTooSlow($this->lastRunDuration);
+                        }
+                    } catch (StopLoopException) {
+                        $this->requestStop();
+                    }
+                }
+
+                $status = $this->getServiceInformations($this->serviceId);
+            }
+            win32_set_service_status(WIN32_SERVICE_STOP_PENDING);
+            $this->beforeStop();
+            win32_set_service_status(WIN32_SERVICE_STOPPED);
+        } catch (RecoveryActionException $exception) {
+            // No action, stop without sending stop status to the service manager to launch the recovery action
         }
-        win32_set_service_status(WIN32_SERVICE_STOP_PENDING);
-        $this->beforeStop();
-        win32_set_service_status(WIN32_SERVICE_STOPPED);
     }
 
     /**
@@ -243,14 +250,14 @@ abstract class AbstractServiceRunner implements RunnerServiceInterface
     private function init(int $maxRun): void
     {
         if ($this->serviceId === null) {
-            throw new  Win32ServiceException('Please run '.__CLASS__.'::__construct');
+            throw new Win32ServiceException('Please run '.__CLASS__.'::__construct');
         }
-        if (strtolower(PHP_OS) === 'winnt') {
+        if (strtolower(\PHP_OS) === 'winnt') {
             return;
         }
         if ($maxRun >= 1) {
             return;
         }
-        throw new  Win32ServiceException('Please define runMax argument greater than 0');
+        throw new Win32ServiceException('Please define runMax argument greater than 0');
     }
 }
